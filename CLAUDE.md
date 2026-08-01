@@ -25,7 +25,15 @@ index.html        La app entera: HTML + CSS + JS en un solo archivo, sin build
 package.json      Solo declara @vercel/blob para la función serverless
 api/room.js       Función serverless de Vercel: salas temporales
 LEEME.md          Guía de despliegue para el usuario
+.env.example      Plantilla vacía de variables; esta sí se versiona
+.env.local        Token real de Blob. IGNORADO por git, nunca versionarlo
+.gitignore        Ignora .env*, node_modules/ y .vercel
 ```
+
+La función necesita `BLOB_READ_WRITE_TOKEN`. En producción la inyecta Vercel sola al
+conectar el Blob store desde la pestaña *Storage*; `.env.local` es solo para local.
+**Nunca poner el token en un archivo versionado** ni pegarlo en `index.html`, que se
+sirve al público entero.
 
 Desplegado en **Vercel, plan Hobby (gratuito)**, como sitio estático con carpeta `api/`.
 Preset de framework: *Other*.
@@ -42,10 +50,19 @@ forma perezosa y con degradación elegante si falla (así están el QR y ffmpeg.
 **Nada de `localStorage` ni `sessionStorage`.** La persistencia de clips usa
 IndexedDB con respaldo en memoria si no está disponible (`Store` al inicio del script).
 
-**El video nunca se sube al servidor.** Es la decisión de arquitectura central. El
-servidor guarda solo segmentos y pistas de voz: ~1 MB por sala. Si se subiera el
-video (10–50 MB), el límite de transferencia de Vercel Blob (10 GB/mes en Hobby) se
-agotaría en unas 80 partidas. Cada jugador usa su propia copia local del archivo.
+**El video se comparte solo si el usuario lo pide, y con tope.** Durante mucho tiempo
+la regla fue que el video *nunca* se subía; se relajó porque exigir que cada amigo
+consiguiera el archivo por su cuenta era la mayor fricción para jugar. Hoy:
+
+- La sala funciona igual de bien **sin** video: es el modo de siempre.
+- Quien crea la sala puede marcar «COMPARTIR EL VIDEO», con tope de **25 MB**
+  (`MAX_CLIP`). Pasado ese tamaño la casilla se deshabilita sola.
+- Quien entra por el enlace y ya tiene el mismo archivo (mismo nombre y tamaño) lo
+  reusa de su biblioteca en vez de bajarlo: bajarlo otra vez gasta cuota.
+
+Sigue vigente el porqué de la regla vieja: con clips de 20 MB y 4 amigos son ~80 MB
+por partida, así que el límite de transferencia de Vercel Blob (10 GB/mes en Hobby)
+da para unas 125 partidas. **No subir el video por omisión ni quitar el tope.**
 
 **El puntaje no debe cambiar por el volumen.** `compare()` normaliza por pico, así que
 es inmune al nivel de grabación. La igualación de volumen (`normGain`) se aplica
@@ -83,19 +100,20 @@ de habla/silencio dilatadas ±4 marcos (40 ms de tolerancia).
 
 ## Cómo probar
 
-No hay navegador aquí. El método que funciona:
+En el equipo del usuario hay **Node** (instalado con `winget install OpenJS.NodeJS.LTS`)
+y **no hay python**. Extraer el script con PowerShell, no con python3:
 
-```bash
-# 1. Sintaxis
-python3 -c "
-import re; s=open('index.html').read()
-open('/tmp/c.js','w').write(re.findall(r'<script>(.*?)</script>', s, re.S)[-1])"
-node --check /tmp/c.js
+```powershell
+$s = Get-Content index.html -Raw
+$m = [regex]::Matches($s, '(?s)<script>(.*?)</script>')
+$m[$m.Count-1].Groups[1].Value | Out-File -FilePath "$env:TEMP\c.js" -Encoding utf8
+node --check "$env:TEMP\c.js"
 node --check api/room.js
-
-# 2. Lógica pura: extraer bloques por sus comentarios delimitadores
-#    y exportarlos con module.exports + un setEnv que inyecta globals
 ```
+
+Ojo: cada llamada a PowerShell arranca con el `Path` viejo, así que Node no aparece
+hasta refrescarlo:
+`$env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")`
 
 Las funciones puras (análisis, puntaje, mezcla, codificación) se extraen recortando
 entre los comentarios `/* ===== ... ===== */` y se prueban con **señales sintéticas**:
@@ -104,14 +122,29 @@ puntajes, detección de segmentos, niveles y el viaje exportar→importar.
 
 Para probar `api/room.js` sin desplegar, crear un `@vercel/blob` falso en memoria en
 `node_modules/` que exporte `put`, `list`, `del`, más un `fetch` global que resuelva
-las URLs simuladas.
+las URLs simuladas. **Que guarde `Buffer`, no `String`**: los trozos del clip son
+binarios y pasarlos por `String()` los corrompe sin que ninguna prueba de texto lo note.
 
-**Trampa conocida:** al simular dos jugadores en la misma sala, cada uno necesita su
-**propia instancia del módulo** (`delete require.cache[...]` antes de cada `require`).
-Compartir el módulo hace que el estado `S` se pise entre jugadores y produce fallos
-fantasma que parecen bugs de la app pero son del arnés.
+**Probar el juego entre dos personas de verdad, en el navegador.** Es lo único que
+encontró los dos bugs de ids de segmento; las pruebas de Node los daban por buenos
+porque el arnés usaba los mismos ids en ambos lados. La receta:
 
-Borrar los archivos de prueba antes de entregar; no deben quedar en el repo.
+1. Un servidor local mínimo que sirva `index.html`, enrute `/api/room` al handler y
+   sirva los blobs falsos con `access-control-allow-origin: *`. Que mande
+   `cache-control: no-store`, o el navegador seguirá ejecutando la versión vieja y se
+   pierde un rato largo persiguiendo un fantasma.
+2. Apuntar las URL del blob falso al servidor local (una variable de entorno basta).
+3. Jugador A en `localhost:PUERTO`, jugador B en `127.0.0.1:PUERTO`. **Son orígenes
+   distintos**, así que tienen IndexedDB separados: es la forma de simular dos
+   computadoras sin dos navegadores.
+4. Como no hay micrófono, inyectar la toma directo en `S.takes` calculando
+   `compare()` a mano, y para el clip fabricar un **WAV sintético** con ráfagas
+   tonales — la app acepta `audio/*` y `autoSegments()` detecta las ráfagas como
+   segmentos.
+
+Borrar los archivos de prueba antes de entregar; no deben quedar en el repo. En
+particular **borrar el `@vercel/blob` falso de `node_modules/`**: si se queda, la app
+parece funcionar pero guarda todo en memoria y no persiste nada.
 
 ---
 
@@ -139,6 +172,32 @@ blob. Versiones fijadas y verificadas: ffmpeg 0.12.15, util 0.12.2, core 0.12.10
 Edge y Safari lo graban directo; Firefox cae a WebM y solo entonces se descarga el
 conversor. No invertir ese orden: la conversión es lentísima comparada con lo nativo.
 
+**Los ids de segmento NUNCA se comparan entre jugadores; se emparejan por tiempo.**
+Esto costó dos bugs seguidos y los dos eran silenciosos — las tomas simplemente no
+aparecían, sin ningún error. `nid()` mete azar en cada id, así que dos personas que
+segmentan el mismo clip sacan **los mismos tiempos con ids distintos**:
+
+- `partySync()` construía un mapa identidad (`map[s.id]=s.id`) sobre los segmentos
+  *locales*. Cuando los cortes calzaban, `partyJoin()` no adoptaba los ids de la sala
+  y el mapa nunca contenía el id ajeno: se descartaban **todas** las tomas. Lo
+  perverso es que fallaba justo en el caso bueno (todos con el mismo clip) y
+  funcionaba cuando los cortes *no* calzaban. Hoy usa `mapSegments(room.segments)`,
+  el mismo emparejador por solapamiento de la importación por archivo.
+- `partyPush()` subía las tomas con los ids *locales* de quien graba. El que recibía
+  no tenía cómo relacionarlos con los de la sala. Hoy traduce a los ids de la sala
+  antes de subir, usando `S.party.segs` como referencia canónica.
+
+La regla que queda: **lo que viaja se referencia siempre a `S.party.segs`** (los
+segmentos de la sala, definidos por quien la creó). Cualquier código nuevo que mande
+o reciba tomas tiene que traducir en la frontera, nunca asumir que un id ajeno
+significa algo localmente.
+
+**Un trozo de clip no puede pasar de 4.5 MB.** Es el tope de tamaño de petición de
+las funciones serverless de Vercel. Por eso `CLIP_CHUNK` son 2.5 MB *en crudo*: ya en
+base64 pesan ~3.4 MB y la petición completa llega a 3.33 MB medidos. Subir el trozo
+no deja margen para mucho más. La bajada no tiene este problema porque va directo al
+CDN.
+
 ---
 
 ## Servidor de salas (`api/room.js`)
@@ -149,6 +208,7 @@ Tres acciones sobre un único endpoint:
 |---|---|
 | `POST ?action=create` | Crea sala, devuelve código de 4 caracteres |
 | `POST ?action=track&code=XXXX` | Sube o reemplaza una pista |
+| `POST ?action=clip&code=XXXX` | Sube **un trozo** del video (opcional) |
 | `GET ?code=XXXX` | Listado de la sala |
 | `GET ?code=XXXX&track=ID` | Descarga una pista con su audio |
 
@@ -170,19 +230,54 @@ cacheadas por el CDN.
 Los `id` se sanean con `safeId()` a `[A-Za-z0-9]` — probado contra intentos de escape
 tipo `../../`. El alfabeto de códigos excluye caracteres ambiguos (I, L, O, 0, 1).
 
-Las salas mueren a las **48 horas**; la limpieza es oportunista al crear salas nuevas,
+**Los metadatos de la sala (clip + segmentos) viven en un blob aparte**, con el
+vencimiento también codificado en el nombre para no tener que descargarlo solo para
+saber si expiró:
+
+```
+salas/<CÓDIGO>/meta__<expiresAt>.json
+```
+
+`findRoomMeta()` hace un solo `list()` con prefijo `salas/<CÓDIGO>/`, filtra por ese
+patrón y **devuelve también el listado completo**, del que salen las pistas y el clip
+sin pedir nada más. Si se cambia el formato, actualizar `findRoomMeta()` y
+`cleanupExpired()` juntos: ambas funciones parsean el mismo nombre.
+
+**El video, cuando se comparte, va troceado:**
+
+```
+salas/<CÓDIGO>/clip/manifest__<b64meta>.json   ← {name, type, size, n}
+salas/<CÓDIGO>/clip/parte__NNN.bin            ← binario crudo, 2.5 MB por trozo
+```
+
+`clipFrom()` arma la respuesta y **devuelve `null` si faltan trozos**, de modo que una
+subida interrumpida no se anuncia como clip usable. El listado entrega las **URL
+públicas del CDN**, no el contenido: la bajada nunca pasa por la función serverless.
+El índice va con ceros a la izquierda y además se ordena numéricamente — un trozo
+fuera de orden produciría un video corrupto.
+
+Las salas mueren a las **48 horas**; la limpieza es oportunista al crear salas nuevas
+(`cleanupExpired()` lista hasta 1000 blobs bajo `salas/` y borra los de código vencido),
 sin cron (Hobby tiene cuota limitada de cron jobs).
 
 ---
 
 ## Cliente de salas
 
-Estado en `S.party = {code, mine, map, seen, timer, busy}`.
+Estado en `S.party = {code, mine, map, seen, segs, timer, busy}`.
 
 - `map` traduce id remoto → id de pista local, para que sincronizar dos veces no duplique
 - `seen` guarda el último timestamp visto por pista, para no rebajar lo que ya se tiene
+- `segs` son los **segmentos canónicos de la sala**: la referencia contra la que se
+  traduce todo lo que entra y sale (ver la nota sobre ids de segmento más arriba)
 - `busy` es una **marca de tiempo**, no un booleano: si una petición se cuelga, el
   candado caduca a los 30 segundos en vez de matar la sincronización para siempre
+
+`S.pending` guarda la sala a la que invitaron pero a la que todavía no se entra. Al
+abrir un enlace `#sala=XXXX`, `lookupRoom()` consulta la sala **antes** de exigir un
+clip y `renderInvite()` muestra qué hace falta: si la sala trae video, ofrece bajarlo
+y entrar de una vez; si no, dice exactamente qué archivo hay que conseguir. Antes se
+pedía «carga el clip» sin decir cuál, que era el punto donde la gente se atascaba.
 
 `ingestTrack()` es compartida entre la importación por archivo y la sincronización de
 sala. Siempre **recalifica** las tomas contra el clip local en vez de confiar en el

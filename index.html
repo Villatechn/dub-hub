@@ -346,14 +346,20 @@ input[type=text]::placeholder{color:#4d707a}
 
   <section class="panel"><h2><span class="n">08</span> PARTY<span class="right" id="partyState">SIN SALA</span></h2><div class="pad">
     <div id="partyOff">
+      <div id="invite" style="display:none">
+        <div class="roomcode" id="inviteCode">————</div>
+        <p class="hint" id="inviteMsg"></p>
+        <button class="btn primary sm" id="inviteGo" style="width:100%">ENTRAR</button>
+      </div>
       <div class="stack">
         <button class="btn primary sm" id="createRoom" disabled>CREAR SALA</button>
+        <label class="toggle"><input type="checkbox" id="shareClip" checked> <span id="shareClipTxt">COMPARTIR EL VIDEO EN LA SALA</span></label>
         <div class="addrow" style="margin:0">
           <input type="text" id="joinCode" placeholder="CÓDIGO" maxlength="4" style="text-transform:uppercase">
           <button class="btn ghost sm" id="joinRoom">ENTRAR</button>
         </div>
       </div>
-      <p class="hint">Crea una sala y pásale el código a tus amigos. Las pistas se sincronizan solas; el video no se sube — cada quien usa su propia copia del archivo.</p>
+      <p class="hint">Crea una sala y pásale el código o el enlace a tus amigos. Las pistas de voz se sincronizan solas. Si compartes el video, tus amigos lo descargan al entrar y no tienes que mandarles nada; si no, cada quien necesita su propia copia del archivo.</p>
     </div>
 
     <div id="partyOn" style="display:none">
@@ -1306,7 +1312,12 @@ function ingestTrack(it,map,reuseLocalId){
 
 /* ===== party: salas temporales ===== */
 const API='/api/room';
-S.party={code:null,mine:null,map:{},seen:{},timer:null,busy:false};
+/* 2.5 MB en crudo pesan ~3.4 MB ya en base64: por debajo del tope de 4.5 MB por
+   petición que tienen las funciones serverless de Vercel. La bajada no usa la
+   función, va directo al CDN de Blob. */
+const CLIP_CHUNK=2.5*1024*1024, MAX_CLIP=25*1024*1024;
+S.party={code:null,mine:null,map:{},seen:{},segs:[],timer:null,busy:false};
+S.pending=null;   // sala a la que nos invitaron pero a la que todavía no entramos
 
 async function api(path,opts){
   const r=await fetch(API+path,opts||{});
@@ -1336,6 +1347,16 @@ function renderParty(){
   $('#partyOn').style.display=on?'':'none';
   $('#partyState').textContent=on?('SALA '+S.party.code):'SIN SALA';
   $('#createRoom').disabled=!(S.current&&S.segments.length)||on;
+
+  const sc=$('#shareClip'),tam=S.current?S.current.blob.size:0;
+  const grande=tam>MAX_CLIP;
+  sc.disabled=!S.current||grande;
+  if(grande)sc.checked=false;
+  $('#shareClipTxt').textContent=!S.current?'COMPARTIR EL VIDEO EN LA SALA'
+    :grande?('EL VIDEO PESA '+mb(tam)+' — DEMASIADO PARA COMPARTIRLO (TOPE '+mb(MAX_CLIP)+')')
+    :('COMPARTIR EL VIDEO EN LA SALA ('+mb(tam)+')');
+  renderInvite();
+
   if(!on)return;
   $('#roomCode').textContent=S.party.code;
   const sel=$('#myTrack');
@@ -1367,6 +1388,85 @@ function renderRoomBoard(list){
   }
 }
 
+function bytesToB64(u8){
+  let s='';const CH=0x8000;
+  for(let i=0;i<u8.length;i+=CH)s+=String.fromCharCode.apply(null,u8.subarray(i,i+CH));
+  return btoa(s);
+}
+const mb=n=>(n/1048576).toFixed(1)+' MB';
+
+/* sube el clip troceado; devuelve true si quedó completo */
+async function pushClip(){
+  const b=S.current.blob,n=Math.ceil(b.size/CLIP_CHUNK);
+  const file={name:S.current.name,type:S.current.type||'video/mp4',size:b.size};
+  for(let i=0;i<n;i++){
+    const parte=b.slice(i*CLIP_CHUNK,Math.min(b.size,(i+1)*CLIP_CHUNK));
+    const b64=bytesToB64(new Uint8Array(await parte.arrayBuffer()));
+    await api('?action=clip&code='+S.party.code,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({i,n,file,b64})});
+    say('Subiendo el video… '+Math.round((i+1)/n*100)+'%');
+  }
+  return true;
+}
+
+/* baja el clip de la sala directo del CDN y lo mete en la biblioteca */
+async function pullClip(cf){
+  const partes=[];
+  for(let i=0;i<cf.chunks.length;i++){
+    const r=await fetch(cf.chunks[i]);
+    if(!r.ok)throw new Error('no se pudo bajar el trozo '+(i+1));
+    partes.push(await r.blob());
+    say('Descargando el video… '+Math.round((i+1)/cf.chunks.length*100)+'%');
+  }
+  const ext=(cf.type||'').includes('webm')?'.webm':(cf.type||'').startsWith('audio')?'.m4a':'.mp4';
+  const f=new File(partes,(cf.name||'clip')+ext,{type:cf.type||'video/mp4'});
+  await addFiles([f]);
+}
+
+function renderInvite(){
+  const p=S.pending,box=$('#invite');
+  box.style.display=p?'':'none';
+  if(!p)return;
+  $('#inviteCode').textContent=p.code;
+  const cf=p.room.clipFile;
+  $('#inviteMsg').textContent=cf
+    ? 'Te invitaron a esta sala y trae el video: «'+cf.name+'» ('+mb(cf.size)+'). Se descarga y entras de una vez.'
+    : 'Te invitaron a esta sala. Necesitas tu propia copia de «'+(p.room.clip?.name||'el clip')+
+      '» ('+(p.room.clip?.dur||0).toFixed(1)+' s). Cárgalo arriba y dale ENTRAR.';
+  $('#inviteGo').textContent=cf?'DESCARGAR EL VIDEO Y ENTRAR':'ENTRAR';
+  $('#inviteGo').disabled=!cf&&!S.current;
+}
+
+/* llegó por enlace: mira qué necesita antes de entrar */
+async function lookupRoom(code){
+  try{
+    const room=await api('?code='+code);
+    S.pending={code,room};
+    renderInvite();
+    if(S.current&&!room.clipFile)partyJoin(code);
+  }catch(e){
+    S.pending=null;renderInvite();
+    say('No se pudo abrir la sala '+code+': '+e.message,true);
+  }
+}
+async function acceptInvite(){
+  const p=S.pending;if(!p)return;
+  const btn=$('#inviteGo');btn.disabled=true;
+  try{
+    if(!S.current&&p.room.clipFile){
+      const cf=p.room.clipFile;
+      // si ya lo bajó antes, reusarlo: bajarlo de nuevo gasta cuota de transferencia
+      const ya=S.clips.find(c=>c.name===cf.name&&c.blob&&c.blob.size===cf.size);
+      if(ya){await selectClip(ya.id);say('Ya tenías este video, no hizo falta bajarlo.');}
+      else await pullClip(cf);
+    }
+    if(!S.current){say('Carga el clip de la escena y dale ENTRAR.',true);btn.disabled=false;return;}
+    S.pending=null;renderInvite();
+    await partyJoin(p.code);
+  }catch(e){say('No se pudo entrar: '+e.message,true);btn.disabled=false;}
+}
+
 async function partyCreate(){
   if(!S.current||!S.segments.length){say('Carga un clip y define los segmentos primero.',true);return;}
   try{
@@ -1375,9 +1475,20 @@ async function partyCreate(){
       body:JSON.stringify({clip:{name:S.current.name,dur:dur(),size:S.current.blob.size},
         segments:S.segments.map(s=>({id:s.id,t0:s.t0,t1:s.t1}))})});
     S.party.code=j.code;S.party.seen={};S.party.map={};
+    S.party.segs=S.segments.map(s=>({id:s.id,t0:s.t0,t1:s.t1}));  // el que crea define los ids
     location.hash='sala='+j.code;
     renderParty();drawQR();startSync();
     say('Sala '+j.code+' creada. Pásales el código o el enlace.');
+
+    if($('#shareClip').checked&&S.current.blob.size<=MAX_CLIP){
+      try{
+        await pushClip();
+        say('Sala '+j.code+' lista con el video. Tus amigos solo necesitan el enlace.');
+      }catch(e){
+        say('La sala '+j.code+' quedó creada, pero el video no se subió ('+e.message+
+            '). Tus amigos van a necesitar su propia copia del archivo.',true);
+      }
+    }
   }catch(e){say('No se pudo crear la sala: '+e.message,true);}
 }
 
@@ -1404,6 +1515,7 @@ async function partyJoin(code){
     S.takes={};S.sel.seg=S.segments[0]?.id||null;
   }
   S.party.code=code;S.party.seen={};S.party.map={};
+  S.party.segs=room.segments.map(s=>({id:s.id,t0:s.t0,t1:s.t1}));
   location.hash='sala='+code;
   if(!S.tracks.length)addTrack('PERSONAJE 1','');
   renderAll();renderParty();drawQR();
@@ -1416,10 +1528,17 @@ async function partyPush(){
   if(!S.party.code||!S.party.mine)return;
   const t=S.tracks.find(x=>x.id===S.party.mine);
   if(!t){say('Elige cuál pista es la tuya.',true);return;}
+  /* Subir con los ids de segmento DE LA SALA, no con los míos: cada jugador segmenta
+     por su lado y saca ids distintos para los mismos tiempos. Sin traducir, el que
+     recibe no sabe a qué segmento pertenece cada toma y la descarta. */
+  const aLocal=mapSegments(S.party.segs||[]);        // id de sala → id local
+  const aSala={};
+  for(const[rid,lid]of Object.entries(aLocal))if(lid)aSala[lid]=rid;
+
   const takes={};
   for(const s of S.segments){
     const tk=S.takes[key(t.id,s.id)];if(!tk)continue;
-    takes[s.id]={sr:EXPORT_SR,b64:pcmToB64(resampleTo(tk.raw,tk.sr,EXPORT_SR))};
+    takes[aSala[s.id]||s.id]={sr:EXPORT_SR,b64:pcmToB64(resampleTo(tk.raw,tk.sr,EXPORT_SR))};
   }
   if(!Object.keys(takes).length){say('Esa pista todavía no tiene tomas.',true);return;}
   try{
@@ -1440,15 +1559,19 @@ async function partySync(pre){
   S.party.busy=Date.now();
   try{
     const room=pre||await api('?code='+S.party.code);
+    if(room.segments&&room.segments.length)S.party.segs=room.segments;
     renderRoomBoard(room.tracks);
     $('#roomHint').textContent='La sala vence el '+
       new Date(room.expiresAt).toLocaleString()+'.';
+    /* Emparejar por solapamiento, NO por id: dos jugadores que segmentan el mismo
+       clip sacan los mismos tiempos pero ids distintos (nid lleva azar). Con un mapa
+       identidad las tomas ajenas se descartaban calladas justo cuando todo calzaba. */
+    const map=mapSegments(room.segments||[]);
     let nuevas=0;
     for(const rt of room.tracks){
       if(rt.id===S.party.mine)continue;                 // la mía no se baja
       if(S.party.seen[rt.id]>=rt.ts)continue;           // sin cambios
       const full=await api('?code='+S.party.code+'&track='+rt.id);
-      const map={};for(const s of S.segments)map[s.id]=s.id;
       const r=ingestTrack(full,map,S.party.map[rt.id]||null);
       S.party.map[rt.id]=r.track.id;
       S.party.seen[rt.id]=rt.ts;
@@ -1464,7 +1587,7 @@ function startSync(){
 }
 function partyLeave(){
   if(S.party.timer)clearInterval(S.party.timer);
-  S.party={code:null,mine:null,map:{},seen:{},timer:null,busy:false};
+  S.party={code:null,mine:null,map:{},seen:{},segs:[],timer:null,busy:false};
   if(location.hash)history.replaceState(null,'',location.pathname);
   renderParty();say('Saliste de la sala. Tus pistas siguen aquí.');
 }
@@ -1656,6 +1779,7 @@ $('#exportBtn').addEventListener('click',()=>{
   say('Mezcla descargada. Únela al video en cualquier editor.');
 });
 $('#createRoom').addEventListener('click',partyCreate);
+$('#inviteGo').addEventListener('click',acceptInvite);
 $('#joinRoom').addEventListener('click',()=>partyJoin($('#joinCode').value));
 $('#joinCode').addEventListener('keydown',e=>{if(e.key==='Enter')$('#joinRoom').click();});
 $('#pushTrack').addEventListener('click',partyPush);
@@ -1706,9 +1830,8 @@ document.addEventListener('keydown',e=>{
   if(m){
     const code=m[1].toUpperCase();
     $('#joinCode').value=code;
-    say(S.current?'Entrando a la sala '+code+'…'
-        :'Te invitaron a la sala '+code+'. Carga el clip de la escena y dale ENTRAR.');
-    if(S.current)partyJoin(code);
+    say('Abriendo la sala '+code+'…');
+    await lookupRoom(code);
   }else if(S.clips.length){
     say(S.clips.length+' clip(s) guardados. Elige uno para empezar.');
   }
