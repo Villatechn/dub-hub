@@ -64,12 +64,12 @@ header{border-bottom:2px solid var(--stage-3);padding:14px 20px;display:flex;
 .cue .big{font-family:var(--display);font-size:14vh;line-height:1;color:var(--gold)}
 .cue .lbl{font-family:var(--util);font-weight:700;letter-spacing:.24em;font-size:14px;color:var(--dim)}
 .cue.go .big{color:var(--magenta);font-size:8vh}
-.reclamp{position:absolute;top:10px;left:0;right:0;margin:0 auto;width:fit-content;display:none;align-items:center;gap:8px;
+.reclamp{position:absolute;top:10px;left:10px;display:none;align-items:center;gap:8px;
   background:rgba(232,51,109,.94);padding:5px 11px;font-family:var(--util);font-weight:700;
   letter-spacing:.16em;font-size:12px}
 .reclamp.show{display:flex}
 .reclamp .dot{width:8px;height:8px;border-radius:50%;background:#fff;animation:pulse .8s steps(2) infinite}
-.listenlamp{position:absolute;top:10px;left:0;right:0;margin:0 auto;width:fit-content;display:none;align-items:center;gap:8px;
+.listenlamp{position:absolute;top:10px;left:10px;display:none;align-items:center;gap:8px;
   background:rgba(242,179,61,.95);color:#08222a;padding:5px 11px;font-family:var(--util);
   font-weight:700;letter-spacing:.16em;font-size:12px}
 .listenlamp.show{display:flex}
@@ -193,6 +193,13 @@ input[type=text]::placeholder{color:#4d707a}
 .brow .sc{font-family:var(--display);font-size:15px;color:var(--gold)}
 .brow.lead{background:var(--gold);color:var(--stage)}
 .brow.lead .pos,.brow.lead .sc{color:var(--stage)}
+.roomcode{font-family:var(--display);font-size:38px;letter-spacing:.14em;text-align:center;
+  color:var(--gold);background:#081a20;border:2px solid var(--line);padding:10px 4px;line-height:1}
+.qrbox{display:none;justify-content:center;background:var(--cream);padding:9px;margin-top:9px}
+.qrbox.show{display:flex}
+.qrbox img,.qrbox canvas,.qrbox table{width:100%;max-width:180px;height:auto;image-rendering:pixelated}
+.brow.me{background:var(--stage-3);border-left:3px solid var(--mint)}
+.brow .tag{font-family:var(--util);font-weight:700;font-size:10px;letter-spacing:.1em;color:var(--dim)}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -335,6 +342,34 @@ input[type=text]::placeholder{color:#4d707a}
       <button class="btn ghost sm" id="impBtn">IMPORTAR PISTAS DE UN AMIGO</button>
     </div>
     <p class="hint">Cada quien graba su personaje por su lado y te manda el archivo. Al importarlo, las tomas se recalifican contra tu clip y se suman a la cuadrícula.</p>
+  </div></section>
+
+  <section class="panel"><h2><span class="n">08</span> PARTY<span class="right" id="partyState">SIN SALA</span></h2><div class="pad">
+    <div id="partyOff">
+      <div class="stack">
+        <button class="btn primary sm" id="createRoom" disabled>CREAR SALA</button>
+        <div class="addrow" style="margin:0">
+          <input type="text" id="joinCode" placeholder="CÓDIGO" maxlength="4" style="text-transform:uppercase">
+          <button class="btn ghost sm" id="joinRoom">ENTRAR</button>
+        </div>
+      </div>
+      <p class="hint">Crea una sala y pásale el código a tus amigos. Las pistas se sincronizan solas; el video no se sube — cada quien usa su propia copia del archivo.</p>
+    </div>
+
+    <div id="partyOn" style="display:none">
+      <div class="roomcode" id="roomCode">————</div>
+      <div class="qrbox" id="qrbox"></div>
+      <div class="stack" style="margin-top:10px">
+        <button class="btn ghost sm" id="copyLink">COPIAR ENLACE</button>
+        <select id="myTrack" style="width:100%"></select>
+        <button class="btn primary sm" id="pushTrack">SUBIR MI PISTA</button>
+        <label class="toggle"><input type="checkbox" id="autoPush" checked> SUBIR CADA TOMA AUTOMÁTICAMENTE</label>
+        <button class="btn ghost sm" id="syncNow">SINCRONIZAR AHORA</button>
+        <button class="btn ghost sm" id="leaveRoom">SALIR DE LA SALA</button>
+      </div>
+      <div class="board" id="roomBoard" style="margin-top:11px"></div>
+      <p class="hint" id="roomHint"></p>
+    </div>
   </div></section>
 
 </div>
@@ -851,7 +886,8 @@ function renderScore(){
   }
 }
 function renderAll(){renderRuler();renderEnv();renderSegs();renderTracks();
-  renderBoard();renderSelInfo();renderScore();}
+  renderBoard();renderSelInfo();renderScore();
+  if(typeof renderParty==='function')renderParty();}
 window.addEventListener('resize',()=>{renderEnv();});
 
 /* ===== grabación por segmento ===== */
@@ -1044,6 +1080,12 @@ async function recordSegment(){
   const next=S.segments.find((sg,k)=>k>si&&!S.takes[key(t.id,sg.id)]);
   if(next)S.sel.seg=next.id;
   renderAll();
+
+  // si estamos en una sala y esta es mi pista, la subo sola
+  if(S.party.code&&S.party.mine===t.id&&$('#autoPush').checked){
+    clearTimeout(S.party.pushTimer);
+    S.party.pushTimer=setTimeout(partyPush,1200);
+  }
 }
 
 /* ===== reproducción y mezcla ===== */
@@ -1225,26 +1267,206 @@ async function importProject(file){
   }
   let added=0,skipped=0;
   for(const it of data.tracks){
-    let name=it.name||'PISTA';
-    if(S.tracks.some(t=>t.name===name))name=name+' (2)';
-    addTrack(name,it.actor||'');
-    const t=S.tracks[S.tracks.length-1];
-    if(it.color)t.color=it.color;
-    if(it.gain)t.gain=it.gain;
-    for(const[segId,tk]of Object.entries(it.takes||{})){
-      const target=map[segId];if(!target){skipped++;continue;}
-      const seg=S.segments.find(s=>s.id===target);if(!seg){skipped++;continue;}
-      const raw=b64ToPcm(tk.b64);
-      const feat=extractFeatures(resampleTo(raw,tk.sr||EXPORT_SR,ASR));
-      const refSeg=sliceFeat(S.current.feat,Math.round(seg.t0/HOPS),Math.round(seg.t1/HOPS));
-      const r=compare(refSeg,feat);
-      if(!r){skipped++;continue;}
-      S.takes[key(t.id,seg.id)]={raw,sr:tk.sr||EXPORT_SR,result:r,norm:normGain(raw)};
-      added++;
-    }
+    const r=ingestTrack(it,map,null);
+    added+=r.added;skipped+=r.skipped;
   }
   renderAll();
   say('Importadas '+added+' tomas'+(skipped?' ('+skipped+' descartadas por no calzar)':'')+'.');
+}
+
+/* mete una pista (de archivo o de la sala) en la cuadrícula, recalificando cada toma */
+function ingestTrack(it,map,reuseLocalId){
+  let t=reuseLocalId?S.tracks.find(x=>x.id===reuseLocalId):null;
+  if(!t){
+    let name=it.name||'PISTA';
+    if(S.tracks.some(x=>x.name===name))name=name+' (2)';
+    addTrack(name,it.actor||'');
+    t=S.tracks[S.tracks.length-1];
+  }else{
+    if(it.name)t.name=it.name;
+    if(it.actor)t.actor=it.actor;
+  }
+  if(it.color)t.color=it.color;
+  if(it.gain)t.gain=it.gain;
+  let added=0,skipped=0;
+  for(const[segId,tk]of Object.entries(it.takes||{})){
+    const target=map[segId];if(!target){skipped++;continue;}
+    const seg=S.segments.find(s=>s.id===target);if(!seg){skipped++;continue;}
+    let raw;
+    try{raw=b64ToPcm(tk.b64);}catch(e){skipped++;continue;}
+    const feat=extractFeatures(resampleTo(raw,tk.sr||EXPORT_SR,ASR));
+    const refSeg=sliceFeat(S.current.feat,Math.round(seg.t0/HOPS),Math.round(seg.t1/HOPS));
+    const r=compare(refSeg,feat);
+    if(!r){skipped++;continue;}
+    S.takes[key(t.id,seg.id)]={raw,sr:tk.sr||EXPORT_SR,result:r,norm:normGain(raw)};
+    added++;
+  }
+  return{track:t,added,skipped};
+}
+
+/* ===== party: salas temporales ===== */
+const API='/api/room';
+S.party={code:null,mine:null,map:{},seen:{},timer:null,busy:false};
+
+async function api(path,opts){
+  const r=await fetch(API+path,opts||{});
+  let j={};try{j=await r.json();}catch(e){}
+  if(!r.ok)throw new Error(j.error||('error '+r.status));
+  return j;
+}
+function partyLink(){
+  return location.origin+location.pathname+'#sala='+S.party.code;
+}
+async function drawQR(){
+  const box=$('#qrbox');box.innerHTML='';box.classList.remove('show');
+  if(!S.party.code)return;
+  try{
+    if(!window.qrcode)
+      await loadScript('https://unpkg.com/qrcode-generator@2.0.4/qrcode.js');
+    if(!window.qrcode)return;
+    const q=window.qrcode(0,'M');
+    q.addData(partyLink());q.make();
+    box.innerHTML=q.createImgTag(4,0);
+    box.classList.add('show');
+  }catch(e){/* sin internet: se queda solo el enlace */}
+}
+function renderParty(){
+  const on=!!S.party.code;
+  $('#partyOff').style.display=on?'none':'';
+  $('#partyOn').style.display=on?'':'none';
+  $('#partyState').textContent=on?('SALA '+S.party.code):'SIN SALA';
+  $('#createRoom').disabled=!(S.current&&S.segments.length)||on;
+  if(!on)return;
+  $('#roomCode').textContent=S.party.code;
+  const sel=$('#myTrack');
+  const prev=S.party.mine;
+  sel.innerHTML='';
+  for(const t of S.tracks){
+    const o=document.createElement('option');
+    o.value=t.id;o.textContent=t.name+(t.actor?' — '+t.actor:'');
+    sel.appendChild(o);
+  }
+  if(prev&&S.tracks.some(t=>t.id===prev))sel.value=prev;
+  else if(S.tracks.length){S.party.mine=S.tracks[0].id;sel.value=S.party.mine;}
+  $('#pushTrack').disabled=!S.party.mine;
+}
+function renderRoomBoard(list){
+  const b=$('#roomBoard');b.innerHTML='';
+  if(!list||!list.length){
+    b.innerHTML='<p class="hint" style="margin:0">Nadie ha subido pistas todavía.</p>';return;}
+  for(const t of list){
+    const mineLocal=S.party.map[t.id]&&S.party.map[t.id]===S.party.mine;
+    const d=document.createElement('div');
+    d.className='brow'+(mineLocal?' me':'');
+    d.innerHTML='<span class="tag"></span><span class="nm"></span><span class="sc"></span>';
+    d.querySelector('.tag').textContent=mineLocal?'TÚ':'';
+    d.querySelector('.nm').textContent=t.name+(t.actor?' · '+t.actor:'');
+    d.querySelector('.sc').textContent=t.takes;
+    d.title=t.takes+' tomas · '+(t.size/1024).toFixed(0)+' KB';
+    b.appendChild(d);
+  }
+}
+
+async function partyCreate(){
+  if(!S.current||!S.segments.length){say('Carga un clip y define los segmentos primero.',true);return;}
+  try{
+    const j=await api('?action=create',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({clip:{name:S.current.name,dur:dur(),size:S.current.blob.size},
+        segments:S.segments.map(s=>({id:s.id,t0:s.t0,t1:s.t1}))})});
+    S.party.code=j.code;S.party.seen={};S.party.map={};
+    location.hash='sala='+j.code;
+    renderParty();drawQR();startSync();
+    say('Sala '+j.code+' creada. Pásales el código o el enlace.');
+  }catch(e){say('No se pudo crear la sala: '+e.message,true);}
+}
+
+async function partyJoin(code){
+  code=String(code||'').toUpperCase().trim();
+  if(!/^[A-Z0-9]{4}$/.test(code)){say('El código son 4 caracteres.',true);return;}
+  if(!S.current){say('Carga primero el clip de la escena, luego entra a la sala.',true);return;}
+  let room;
+  try{room=await api('?code='+code);}
+  catch(e){say('No se pudo entrar: '+e.message,true);return;}
+
+  const dd=Math.abs((room.clip?.dur||0)-dur());
+  if(dd>0.6&&!confirm('El clip de la sala dura '+(room.clip?.dur||0).toFixed(1)+
+      ' s y el tuyo '+dur().toFixed(1)+' s.\n\n¿Entrar de todos modos? Las pistas pueden no calzar.'))
+    return;
+
+  const mismatch=S.segments.length!==room.segments.length||
+    room.segments.some((s,i)=>!S.segments[i]||Math.abs(S.segments[i].t0-s.t0)>0.05);
+  if(mismatch){
+    if(Object.keys(S.takes).length&&
+       !confirm('La sala usa otros cortes de segmento. Al entrar se adoptan los suyos y se pierden tus tomas actuales.\n\n¿Continuar?'))
+      return;
+    S.segments=room.segments.map(s=>({id:s.id,t0:s.t0,t1:s.t1}));
+    S.takes={};S.sel.seg=S.segments[0]?.id||null;
+  }
+  S.party.code=code;S.party.seen={};S.party.map={};
+  location.hash='sala='+code;
+  if(!S.tracks.length)addTrack('PERSONAJE 1','');
+  renderAll();renderParty();drawQR();
+  say('Dentro de la sala '+code+'. Elige cuál pista es la tuya y graba.');
+  await partySync(room);
+  startSync();
+}
+
+async function partyPush(){
+  if(!S.party.code||!S.party.mine)return;
+  const t=S.tracks.find(x=>x.id===S.party.mine);
+  if(!t){say('Elige cuál pista es la tuya.',true);return;}
+  const takes={};
+  for(const s of S.segments){
+    const tk=S.takes[key(t.id,s.id)];if(!tk)continue;
+    takes[s.id]={sr:EXPORT_SR,b64:pcmToB64(resampleTo(tk.raw,tk.sr,EXPORT_SR))};
+  }
+  if(!Object.keys(takes).length){say('Esa pista todavía no tiene tomas.',true);return;}
+  try{
+    const j=await api('?action=track&code='+S.party.code,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({track:{id:t.id,name:t.name,actor:t.actor,
+        color:t.color,gain:t.gain||1,takes}})});
+    S.party.seen[t.id]=j.ts;S.party.map[t.id]=t.id;
+    say('Pista subida: '+j.takes+' tomas.');
+    partySync();
+  }catch(e){say('No se pudo subir: '+e.message,true);}
+}
+
+async function partySync(pre){
+  if(!S.party.code||S.recording)return;
+  // candado con caducidad: si una petición se cuelga, no bloquea la sala para siempre
+  if(S.party.busy&&Date.now()-S.party.busy<30000)return;
+  S.party.busy=Date.now();
+  try{
+    const room=pre||await api('?code='+S.party.code);
+    renderRoomBoard(room.tracks);
+    $('#roomHint').textContent='La sala vence el '+
+      new Date(room.expiresAt).toLocaleString()+'.';
+    let nuevas=0;
+    for(const rt of room.tracks){
+      if(rt.id===S.party.mine)continue;                 // la mía no se baja
+      if(S.party.seen[rt.id]>=rt.ts)continue;           // sin cambios
+      const full=await api('?code='+S.party.code+'&track='+rt.id);
+      const map={};for(const s of S.segments)map[s.id]=s.id;
+      const r=ingestTrack(full,map,S.party.map[rt.id]||null);
+      S.party.map[rt.id]=r.track.id;
+      S.party.seen[rt.id]=rt.ts;
+      nuevas+=r.added;
+    }
+    if(nuevas){renderAll();say('Llegaron '+nuevas+' tomas nuevas de la sala.');}
+  }catch(e){/* silencioso: la sincronización reintenta sola */}
+  finally{S.party.busy=0;}
+}
+function startSync(){
+  if(S.party.timer)clearInterval(S.party.timer);
+  S.party.timer=setInterval(()=>partySync(),8000);
+}
+function partyLeave(){
+  if(S.party.timer)clearInterval(S.party.timer);
+  S.party={code:null,mine:null,map:{},seen:{},timer:null,busy:false};
+  if(location.hash)history.replaceState(null,'',location.pathname);
+  renderParty();say('Saliste de la sala. Tus pistas siguen aquí.');
 }
 
 /* ===== render del video doblado ===== */
@@ -1433,6 +1655,17 @@ $('#exportBtn').addEventListener('click',()=>{
   a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);
   say('Mezcla descargada. Únela al video en cualquier editor.');
 });
+$('#createRoom').addEventListener('click',partyCreate);
+$('#joinRoom').addEventListener('click',()=>partyJoin($('#joinCode').value));
+$('#joinCode').addEventListener('keydown',e=>{if(e.key==='Enter')$('#joinRoom').click();});
+$('#pushTrack').addEventListener('click',partyPush);
+$('#syncNow').addEventListener('click',()=>partySync());
+$('#leaveRoom').addEventListener('click',partyLeave);
+$('#myTrack').addEventListener('change',e=>{S.party.mine=e.target.value;renderParty();});
+$('#copyLink').addEventListener('click',async()=>{
+  try{await navigator.clipboard.writeText(partyLink());say('Enlace copiado.');}
+  catch(e){prompt('Copia este enlace:',partyLink());}
+});
 $('#videoBtn').addEventListener('click',renderVideo);
 $('#expTrack').addEventListener('click',()=>{
   const t=S.tracks.find(x=>x.id===S.sel.track);
@@ -1462,13 +1695,23 @@ document.addEventListener('keydown',e=>{
 
 /* ===== arranque ===== */
 (async function init(){
-  renderAll();
+  renderAll();renderParty();
   const ok=await Store.init();
   if(!ok)$('#libHint').textContent='Este navegador no guarda los clips entre sesiones.';
   for(const r of await Store.all())
     if(r.blob)S.clips.push({id:r.id,name:r.name,blob:r.blob,type:r.type,dur:r.dur,feat:null});
   renderLib();
-  if(S.clips.length)say(S.clips.length+' clip(s) guardados. Elige uno para empezar.');
+
+  const m=location.hash.match(/sala=([A-Za-z0-9]{4})/);
+  if(m){
+    const code=m[1].toUpperCase();
+    $('#joinCode').value=code;
+    say(S.current?'Entrando a la sala '+code+'…'
+        :'Te invitaron a la sala '+code+'. Carga el clip de la escena y dale ENTRAR.');
+    if(S.current)partyJoin(code);
+  }else if(S.clips.length){
+    say(S.clips.length+' clip(s) guardados. Elige uno para empezar.');
+  }
 })();
 </script>
 </body>
