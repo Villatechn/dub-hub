@@ -35,6 +35,14 @@ conectar el Blob store desde la pestaña *Storage*; `.env.local` es solo para lo
 **Nunca poner el token en un archivo versionado** ni pegarlo en `index.html`, que se
 sirve al público entero.
 
+**El Blob store es PRIVADO.** No es un detalle menor: el modo de acceso se fija al
+crear el store y **Vercel no deja cambiarlo después**. Todo lo que escribe la función
+usa `access: 'private'`, y nada se sirve por URL pública — hasta los trozos del video
+pasan por la función, que los lee con `get()` y los reenvía. Requiere
+`@vercel/blob >= 2.3`; el `package.json` fija `^2.6.1`. Si alguna vez se quiere volver
+al modo público (más barato de entregar), hay que crear un store nuevo, no cambiar
+este.
+
 Desplegado en **Vercel, plan Hobby (gratuito)**, como sitio estático con carpeta `api/`.
 Preset de framework: *Other*.
 
@@ -60,9 +68,12 @@ consiguiera el archivo por su cuenta era la mayor fricción para jugar. Hoy:
 - Quien entra por el enlace y ya tiene el mismo archivo (mismo nombre y tamaño) lo
   reusa de su biblioteca en vez de bajarlo: bajarlo otra vez gasta cuota.
 
-Sigue vigente el porqué de la regla vieja: con clips de 20 MB y 4 amigos son ~80 MB
-por partida, así que el límite de transferencia de Vercel Blob (10 GB/mes en Hobby)
-da para unas 125 partidas. **No subir el video por omisión ni quitar el tope.**
+Sigue vigente el porqué de la regla vieja, y con el store privado pesa más: cada
+trozo que baja un amigo es **una invocación de función** y se cobra como *Fast Data
+Transfer*, que Vercel documenta como ~3× más caro que el *Blob Data Transfer* de los
+stores públicos. Con clips de 20 MB y 4 amigos son ~80 MB por partida. **No subir el
+video por omisión, no quitar el tope de 25 MB y no subir `CLIP_CHUNK` sin recalcular
+el margen de 4.5 MB.**
 
 **El puntaje no debe cambiar por el volumen.** `compare()` normaliza por pico, así que
 es inmune al nivel de grabación. La igualación de volumen (`normGain`) se aplica
@@ -121,9 +132,18 @@ ráfagas tonales con armónicos, contorno de tono y envolvente. Sirven para veri
 puntajes, detección de segmentos, niveles y el viaje exportar→importar.
 
 Para probar `api/room.js` sin desplegar, crear un `@vercel/blob` falso en memoria en
-`node_modules/` que exporte `put`, `list`, `del`, más un `fetch` global que resuelva
-las URLs simuladas. **Que guarde `Buffer`, no `String`**: los trozos del clip son
-binarios y pasarlos por `String()` los corrompe sin que ninguna prueba de texto lo note.
+`node_modules/` que exporte `put`, `list`, `del` y **`get`** (devolviendo
+`{statusCode, stream, blob}` con un `ReadableStream` de verdad, que es lo que consume
+`readBlob()`). Requisitos que costaron un fallo cada uno:
+
+- **Guardar `Buffer`, no `String`**: los trozos del clip son binarios y pasarlos por
+  `String()` los corrompe sin que ninguna prueba de texto lo note.
+- **Reproducir el rechazo a sobrescribir** y el error de acceso público sobre store
+  privado. Si el falso es más permisivo que el SDK real, las pruebas pasan y la
+  producción revienta — que es exactamente lo que ocurrió.
+- **Un interruptor de fallo** (`_failWith(msg)`) consultado *dentro* de cada función.
+  `room.js` desestructura `put/list/del/get` al cargar el módulo, así que reasignar
+  `blob.get` desde la prueba no tiene ningún efecto.
 
 **Probar el juego entre dos personas de verdad, en el navegador.** Es lo único que
 encontró los dos bugs de ids de segmento; las pruebas de Node los daban por buenos
@@ -136,7 +156,10 @@ porque el arnés usaba los mismos ids en ambos lados. La receta:
 2. Apuntar las URL del blob falso al servidor local (una variable de entorno basta).
 3. Jugador A en `localhost:PUERTO`, jugador B en `127.0.0.1:PUERTO`. **Son orígenes
    distintos**, así que tienen IndexedDB separados: es la forma de simular dos
-   computadoras sin dos navegadores.
+   computadoras sin dos navegadores. Al recargar para probar otra sala, **cambiar
+   también algo fuera del `#hash`** (`?r=2`): navegar de `#sala=AAAA` a `#sala=BBBB`
+   es navegación en el mismo documento, no recarga, e `init()` nunca vuelve a correr
+   — se queda el estado de la sala anterior y parece que todo falla.
 4. Como no hay micrófono, inyectar la toma directo en `S.takes` calculando
    `compare()` a mano, y para el clip fabricar un **WAV sintético** con ráfagas
    tonales — la app acepta `audio/*` y `autoSegments()` detecta las ráfagas como
@@ -211,6 +234,7 @@ Tres acciones sobre un único endpoint:
 | `POST ?action=clip&code=XXXX` | Sube **un trozo** del video (opcional) |
 | `GET ?code=XXXX` | Listado de la sala |
 | `GET ?code=XXXX&track=ID` | Descarga una pista con su audio |
+| `GET ?code=XXXX&clip=N&ts=T` | Descarga **un trozo** del video (binario) |
 
 **Los metadatos de pista viajan dentro del nombre del archivo**, codificados en
 base64url:
@@ -246,15 +270,21 @@ sin pedir nada más. Si se cambia el formato, actualizar `findRoomMeta()` y
 **El video, cuando se comparte, va troceado:**
 
 ```
-salas/<CÓDIGO>/clip/manifest__<b64meta>.json   ← {name, type, size, n}
-salas/<CÓDIGO>/clip/parte__NNN.bin            ← binario crudo, 2.5 MB por trozo
+salas/<CÓDIGO>/clip/<TS>__manifest__<b64meta>.json   ← {name, type, size, n}
+salas/<CÓDIGO>/clip/<TS>__parte__NNN.bin             ← binario crudo, 2.5 MB por trozo
 ```
 
-`clipFrom()` arma la respuesta y **devuelve `null` si faltan trozos**, de modo que una
-subida interrumpida no se anuncia como clip usable. El listado entrega las **URL
-públicas del CDN**, no el contenido: la bajada nunca pasa por la función serverless.
-El índice va con ceros a la izquierda y además se ordena numéricamente — un trozo
-fuera de orden produciría un video corrupto.
+El `TS` lo genera **el cliente una vez por subida** y lo manda en cada trozo; agrupa
+la subida completa. Existe por dos razones concretas: el SDK moderno **lanza error al
+escribir sobre un pathname que ya existe** (salvo `allowOverwrite`), y reescribir el
+mismo nombre podía servir el trozo viejo hasta 60 s por la caché del CDN. Con el
+sello, cada subida estrena rutas y ninguno de los dos problemas aparece.
+
+`clipFrom()` toma el manifiesto con el `TS` más alto, junta solo los trozos de ese
+mismo sello y **devuelve `null` si faltan**, de modo que una subida interrumpida no se
+anuncia como clip usable. Devuelve **URLs a la propia función** (`?clip=N&ts=T`), no
+del CDN: el store es privado. El índice va con ceros a la izquierda y además se ordena
+numéricamente — un trozo fuera de orden produciría un video corrupto.
 
 Las salas mueren a las **48 horas**; la limpieza es oportunista al crear salas nuevas
 (`cleanupExpired()` lista hasta 1000 blobs bajo `salas/` y borra los de código vencido),

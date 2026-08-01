@@ -1399,12 +1399,13 @@ const mb=n=>(n/1048576).toFixed(1)+' MB';
 async function pushClip(){
   const b=S.current.blob,n=Math.ceil(b.size/CLIP_CHUNK);
   const file={name:S.current.name,type:S.current.type||'video/mp4',size:b.size};
+  const ts=Date.now();   // agrupa los trozos de ESTA subida; el servidor los junta por él
   for(let i=0;i<n;i++){
     const parte=b.slice(i*CLIP_CHUNK,Math.min(b.size,(i+1)*CLIP_CHUNK));
     const b64=bytesToB64(new Uint8Array(await parte.arrayBuffer()));
     await api('?action=clip&code='+S.party.code,{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({i,n,file,b64})});
+      body:JSON.stringify({i,n,ts,file,b64})});
     say('Subiendo el video… '+Math.round((i+1)/n*100)+'%');
   }
   return true;

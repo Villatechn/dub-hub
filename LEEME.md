@@ -13,6 +13,11 @@
 4. Si conectaste el Blob después del primer deploy, hace falta un **redeploy** para
    que la función vea la variable (Deployments → ⋯ → Redeploy).
 
+> El código está escrito para un Blob store **privado**, que es el que tienes. Nada
+> queda accesible por URL pública: hasta el video pasa por la función, que lo lee
+> autenticado. Si algún día creas un store **público**, este código deja de funcionar
+> tal cual — Vercel no permite cambiarle el modo de acceso a un store ya creado.
+
 El archivo `.env.local` de esta carpeta tiene tu token para pruebas locales y está
 ignorado por git a propósito — no lo subas a ningún lado.
 
@@ -35,9 +40,11 @@ cada quien graba cuando pueda.
 ## Límites a tener en cuenta
 
 - Plan Hobby de Vercel: uso personal, no comercial.
-- Blob gratis: 10 GB de transferencia al mes. Sin compartir el video solo viajan las
-  voces (~1 MB por sala) y no lo vas a notar. Compartiendo un clip de 20 MB con 4
-  amigos gastas ~80 MB por partida, o sea unas 125 partidas al mes.
+- Sin compartir el video solo viajan las voces (~1 MB por sala) y no lo vas a notar.
+- Compartiendo el video gastas más: como tu Blob store es privado, cada trozo lo
+  entrega la función, y eso cuenta como transferencia de la cara. Un clip de 20 MB con
+  4 amigos son ~80 MB por partida. Para jugar entre amigos va sobrado, pero no lo
+  dejes marcado si vas a crear muchas salas de prueba.
 - Tope de 25 MB por clip. Si tu video pesa más, la casilla se deshabilita sola y te
   dice cuánto pesa; recórtalo o mándalo por tu cuenta.
 - Las salas y sus videos se borran solos a las 48 horas. No hay que limpiar nada.
