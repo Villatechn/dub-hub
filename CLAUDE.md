@@ -51,7 +51,10 @@ Preset de framework: *Other*.
 ## Reglas que no se rompen
 
 **Sin build step, sin framework, sin bundler.** `index.html` se abre directo en un
-navegador y funciona. No introducir React, Vite, npm scripts de compilación ni
+navegador y funciona — con una sola excepción: **las salas no**, porque en `file://`
+no existe `/api/room` y `fetch` falla con un `TypeError` seco. El panel PARTY lo
+detecta (`sinServidor()`), se marca SIN SERVIDOR y explica que el resto sí sirve.
+Al probar salas hay que usar el sitio publicado o `vercel dev`. No introducir React, Vite, npm scripts de compilación ni
 dividir el archivo en módulos. Si algo necesita una librería, se carga por CDN de
 forma perezosa y con degradación elegante si falla (así están el QR y ffmpeg.wasm).
 
@@ -76,8 +79,16 @@ video por omisión, no quitar el tope de 25 MB y no subir `CLIP_CHUNK` sin recal
 el margen de 4.5 MB.**
 
 **El puntaje no debe cambiar por el volumen.** `compare()` normaliza por pico, así que
-es inmune al nivel de grabación. La igualación de volumen (`normGain`) se aplica
-**solo en la mezcla**, nunca destructivamente sobre `tk.raw`. Mantener esa separación.
+es inmune al nivel de grabación. La igualación de volumen (`normGain`), los volúmenes
+manuales y la puerta de ruido se aplican **solo en la mezcla**, nunca destructivamente
+sobre `tk.raw`. Mantener esa separación: es lo que permite subirle el volumen a una
+toma o limpiarle el ruido sin que a nadie le cambie la nota.
+
+**Nunca escribir `gain||1`.** Un volumen de 0 es legítimo — significa mudo — y `||1`
+lo convierte en 1, dejando sonando a todo volumen justo lo que se mandó callar. Para
+eso está `vol1()`, que solo cae a 1 cuando el valor falta o es basura. Se coló una vez
+en seis sitios a la vez (mezcla, exportación, sincronización e importación) al añadir
+los sliders, porque antes los botones `−`/`+` nunca bajaban de 0.25.
 
 ---
 
@@ -106,6 +117,32 @@ copia exacta = 100, retraso de 400 ms = 33, hablar sin parar = 56.
 **Entonación** compara el contorno *relativo* en semitonos (se resta la mediana de cada
 uno), de modo que voces graves y agudas compiten parejo. **Sincronía** compara máscaras
 de habla/silencio dilatadas ±4 marcos (40 ms de tolerancia).
+
+---
+
+## Mezcla: volúmenes y puerta de ruido
+
+Toda la ganancia pasa por un solo punto, `takeGain()`, que multiplica tres cosas:
+igualación automática (`tk.norm`, si está marcada) × volumen de la pista (`t.gain`,
+slider en la cabecera) × volumen de la toma (`tk.gain`, clic derecho sobre la celda,
+o pulsación larga en móvil). Los tres viajan en la exportación y en la sincronización
+de sala.
+
+La **puerta de ruido** (`gateEnvelope`) devuelve una envolvente de ganancia por marcos
+de 5 ms; `mixdown()` la interpola por muestra. Nunca modifica `tk.raw`. Cómo funciona:
+el piso de ruido es el **percentil 20** de los RMS por marco, el umbral de apertura es
+ese piso por un factor según el nivel, hay histéresis al 60 % para que no parpadee, y
+la máscara se **dilata ±3 marcos** para no comerse el ataque de la primera sílaba ni
+la cola de la última. Al final una media móvil de ±4 marcos suaviza las rampas.
+
+Cada nivel se define por su piso, que es literalmente cuánto baja en los silencios:
+0.50 (suave, −6 dB), 0.22 (media, −13 dB), 0.06 (fuerte, −24 dB). Verificado con
+señales sintéticas: el ruido baja esos valores exactos y la voz queda en 0.0 dB.
+
+Dos salvaguardas que importan: si el umbral quedara por encima del 60 % del pico se
+recorta, para que **hablar sin parar no se recorte**; y con silencio absoluto o tomas
+de menos de 8 marcos devuelve `null` (no hay nada que separar). La envolvente se
+**cachea por toma y nivel**, porque es cara y no depende del volumen.
 
 ---
 
@@ -317,15 +354,14 @@ puntaje que venga del otro lado.
 
 ## Ideas pendientes
 
-- **Puerta de ruido**: la igualación de volumen sube el ruido de fondo junto con la voz
-  cuando alguien graba en ambiente ruidoso
 - **Ensayo en bucle**: hoy son 1, 2 o 3 repeticiones fijas; para frases largas sería
   mejor repetir hasta que la persona presione una tecla
 - **Detección de segmentos con música de fondo**: el umbral relativo al pico (`VOICE_FLOOR
   = 0.10`) funciona con diálogo limpio, pero con música continua no encuentra silencios
 - **Modo en vivo por WebRTC**: las salas actuales son asíncronas; falta el modo
   "todos conectados a la vez" tipo Jackbox
-- **Ajuste de ganancia por toma** (hoy solo hay por pista)
+- **Puerta de ruido por pista**: hoy el nivel es global para toda la mezcla; con un
+  ambiente muy distinto entre jugadores convendría poder ajustarlo por pista
 
 ---
 

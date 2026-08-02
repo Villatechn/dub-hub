@@ -115,6 +115,17 @@ select{background:#081a20;border:2px solid var(--line);color:var(--cream);paddin
   color:var(--dim);border:1px solid var(--line);padding:1px 5px}
 .rowhead .tools button:hover{color:var(--cream);border-color:var(--cream)}
 .rowhead .tools button.on{background:var(--magenta);border-color:var(--magenta);color:#fff}
+.rowhead .vol{display:flex;align-items:center;gap:5px;margin-top:1px}
+.rowhead .vol b{font-family:var(--util);font-weight:700;font-size:9.5px;letter-spacing:.06em;
+  color:var(--dim);min-width:34px;text-align:right}
+.vslider{-webkit-appearance:none;appearance:none;flex:1;min-width:0;height:3px;padding:0;
+  background:var(--line);border:0;cursor:pointer}
+.vslider::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;border-radius:50%;
+  background:var(--cream);border:0;cursor:pointer}
+.vslider::-moz-range-thumb{width:11px;height:11px;border-radius:50%;background:var(--cream);
+  border:0;cursor:pointer}
+.vslider:hover::-webkit-slider-thumb{background:var(--gold)}
+.vslider:hover::-moz-range-thumb{background:var(--gold)}
 .lane{position:relative;min-height:52px;background:
   repeating-linear-gradient(90deg,transparent 0 39px,#12333e 39px 40px)}
 
@@ -140,6 +151,24 @@ canvas#env{display:block;width:100%;height:56px;background:#081a20}
 .cell.has{background:var(--tc,var(--mint));border-color:transparent}
 .cell .sc{font-family:var(--display);font-size:14px;color:#08222a}
 .cell .dotmark{font-size:15px;color:#3f6a76}
+.cell.quiet{opacity:.45}
+.cell.loud::after{content:'';position:absolute;top:2px;right:2px;width:5px;height:5px;
+  border-radius:50%;background:var(--gold)}
+
+/* menú de la toma (clic derecho sobre una celda grabada) */
+.pop{position:fixed;z-index:60;display:none;min-width:216px;padding:10px 11px;
+  background:#0b1e24;border:1px solid var(--gold);box-shadow:0 10px 28px rgba(0,0,0,.55)}
+.pop.show{display:block}
+.pop h4{font-family:var(--util);font-weight:700;font-size:10.5px;letter-spacing:.1em;
+  color:var(--gold);margin:0 0 7px}
+.pop .val{font-family:var(--display);font-size:19px;line-height:1;color:var(--cream);
+  margin:2px 0 7px;display:flex;align-items:baseline;gap:6px}
+.pop .val small{font-family:var(--util);font-size:9.5px;letter-spacing:.08em;color:var(--dim)}
+.pop .acts{display:flex;gap:5px;margin-top:9px}
+.pop .acts button{flex:1;font-family:var(--util);font-weight:700;font-size:10px;letter-spacing:.06em;
+  color:var(--dim);border:1px solid var(--line);padding:4px 3px;background:none;cursor:pointer}
+.pop .acts button:hover{color:var(--cream);border-color:var(--cream)}
+.pop .acts button.danger:hover{color:#ff8fae;border-color:#ff8fae}
 .cell.has.muted{opacity:.3}
 
 .playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--gold);
@@ -313,12 +342,18 @@ input[type=text]::placeholder{color:#4d707a}
 
   <section class="panel"><h2><span class="n">05</span> MARCADOR</h2><div class="pad">
     <div class="board" id="board"></div>
-    <p class="hint">Promedio ponderado por duración de los segmentos que grabó cada quien.</p>
+    <p class="hint">El volumen y la supresión de ruido no mueven las notas: se califica sobre la grabación cruda. Promedio ponderado por duración de los segmentos que grabó cada quien.</p>
   </div></section>
 
   <section class="panel"><h2><span class="n">06</span> ENTREGA</h2><div class="pad">
     <div class="stack">
       <label class="toggle"><input type="checkbox" id="normOn" checked> IGUALAR VOLUMEN DE LAS PISTAS</label>
+      <select id="gateLvl" style="width:100%">
+        <option value="0">Sin supresión de ruido</option>
+        <option value="1" selected>Ruido: supresión suave</option>
+        <option value="2">Ruido: supresión media</option>
+        <option value="3">Ruido: supresión fuerte</option>
+      </select>
       <select id="vfmt" style="width:100%">
         <option value="mp4" selected>Formato MP4 (H.264)</option>
         <option value="webm">Formato WebM (siempre rápido)</option>
@@ -359,7 +394,7 @@ input[type=text]::placeholder{color:#4d707a}
           <button class="btn ghost sm" id="joinRoom">ENTRAR</button>
         </div>
       </div>
-      <p class="hint">Crea una sala y pásale el código o el enlace a tus amigos. Las pistas de voz se sincronizan solas. Si compartes el video, tus amigos lo descargan al entrar y no tienes que mandarles nada; si no, cada quien necesita su propia copia del archivo.</p>
+      <p class="hint" id="partyHint">Crea una sala y pásale el código o el enlace a tus amigos. Las pistas de voz se sincronizan solas. Si compartes el video, tus amigos lo descargan al entrar y no tienes que mandarles nada; si no, cada quien necesita su propia copia del archivo.</p>
     </div>
 
     <div id="partyOn" style="display:none">
@@ -383,6 +418,17 @@ input[type=text]::placeholder{color:#4d707a}
 
 <input type="file" id="fileIn" accept="video/*,audio/*" multiple hidden>
 <input type="file" id="impIn" accept=".json,application/json" hidden>
+
+<div class="pop" id="takePop">
+  <h4 id="popTitle">TOMA</h4>
+  <div class="val"><span id="popVal">1.00×</span><small id="popNote"></small></div>
+  <input type="range" class="vslider" id="popGain" min="0" max="3" step="0.05" value="1">
+  <div class="acts">
+    <button id="popPlay">ESCUCHAR</button>
+    <button id="popReset">1.00×</button>
+    <button id="popDel" class="danger">BORRAR</button>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -538,6 +584,8 @@ const S={clips:[],current:null,segments:[],tracks:[],takes:{},
   sel:{track:null,seg:null},recording:false,uid:0};
 const key=(t,s)=>t+'|'+s;
 const nid=p=>p+(++S.uid)+Math.random().toString(36).slice(2,5);
+/* ojo: (g||1) convertiría un 0 legítimo en 1 y dejaría sonando lo que se puso en silencio */
+const vol1=g=>typeof g==='number'&&isFinite(g)&&g>=0?g:1;
 
 /* ===== dom ===== */
 const $=s=>document.querySelector(s);
@@ -769,19 +817,27 @@ function renderTracks(){
     const row=document.createElement('div');row.className='row';
     const head=document.createElement('div');head.className='rowhead';
     head.innerHTML='<span class="nm"></span><span class="sub"></span>'+
-      '<span class="tools"><button data-a="mute">M</button><button data-a="down">−</button>'+
-      '<button data-a="up">+</button><button data-a="ren">✎</button><button data-a="del">×</button></span>';
+      '<span class="tools"><button data-a="mute">M</button>'+
+      '<button data-a="ren">✎</button><button data-a="del">×</button></span>'+
+      '<span class="vol"><input type="range" class="vslider" data-a="vol" '+
+      'min="0" max="3" step="0.05"><b></b></span>';
     head.querySelector('.nm').textContent=t.name;
     head.querySelector('.nm').style.color=t.color;
     const done=S.segments.filter(s=>S.takes[key(t.id,s.id)]).length;
-    const gtxt=(t.gain&&Math.abs(t.gain-1)>0.01)?' · '+t.gain.toFixed(2)+'×':'';
-    head.querySelector('.sub').textContent=(t.actor?t.actor+' · ':'')+done+'/'+S.segments.length+gtxt;
+    head.querySelector('.sub').textContent=(t.actor?t.actor+' · ':'')+done+'/'+S.segments.length;
     head.querySelector('[data-a=mute]').classList.toggle('on',t.mute);
     head.querySelector('[data-a=mute]').addEventListener('click',()=>{t.mute=!t.mute;renderAll();});
-    head.querySelector('[data-a=down]').addEventListener('click',()=>{
-      t.gain=Math.max(0.25,Math.round(((t.gain||1)-0.25)*100)/100);renderAll();});
-    head.querySelector('[data-a=up]').addEventListener('click',()=>{
-      t.gain=Math.min(4,Math.round(((t.gain||1)+0.25)*100)/100);renderAll();});
+
+    const vol=head.querySelector('[data-a=vol]'),vtxt=head.querySelector('.vol b');
+    vol.value=vol1(t.gain);
+    vol.title='Volumen de toda la pista';
+    const pintaVol=()=>{const g=vol1(t.gain);
+      vtxt.textContent=g?g.toFixed(2)+'×':'MUDA';
+      vtxt.style.color=Math.abs(g-1)>0.01?'var(--gold)':'';};
+    pintaVol();
+    // en 'input' NO se re-renderiza: volver a dibujar la fila mataría el arrastre
+    vol.addEventListener('input',()=>{t.gain=+vol.value;pintaVol();});
+    vol.addEventListener('change',renderAll);
     head.querySelector('[data-a=ren]').addEventListener('click',()=>{
       const n=prompt('Nombre del personaje:',t.name);if(n===null)return;
       const a=prompt('Quién lo dobla (opcional):',t.actor||'');
@@ -796,13 +852,29 @@ function renderTracks(){
     for(const s of S.segments){
       const c=document.createElement('div');
       const tk=S.takes[key(t.id,s.id)];
+      const tg=tk?vol1(tk.gain):1;
       c.className='cell'+(tk?' has':'')+(t.mute?' muted':'')+
-        (S.sel.track===t.id&&S.sel.seg===s.id?' sel':'');
+        (S.sel.track===t.id&&S.sel.seg===s.id?' sel':'')+
+        (tk&&tg<0.95?' quiet':'')+(tk&&tg>1.05?' loud':'');
       c.style.setProperty('--tc',t.color);
       c.style.left=pct(s.t0);c.style.width=((s.t1-s.t0)/dur()*100)+'%';
       c.innerHTML=tk?'<span class="sc">'+tk.result.total+'</span>':'<span class="dotmark">●</span>';
-      c.title=tk?('Toma grabada · '+tk.result.total+'/100'):'Vacío · clic para elegir y grabar';
+      c.title=tk?('Toma grabada · '+tk.result.total+'/100'+
+          (Math.abs(tg-1)>0.01?' · volumen '+tg.toFixed(2)+'×':'')+
+          '\nClic derecho: volumen de esta toma')
+        :'Vacío · clic para elegir y grabar';
       c.addEventListener('click',()=>{S.sel={track:t.id,seg:s.id};renderAll();});
+      if(tk){
+        c.addEventListener('contextmenu',e=>{e.preventDefault();abrirPop(t,s,e.clientX,e.clientY);});
+        // en pantallas táctiles no hay clic derecho: mantener pulsado hace lo mismo
+        let temp=null;
+        c.addEventListener('touchstart',e=>{
+          const to=e.touches[0];
+          temp=setTimeout(()=>{temp=null;abrirPop(t,s,to.clientX,to.clientY);},500);
+        },{passive:true});
+        const corta=()=>{if(temp){clearTimeout(temp);temp=null;}};
+        c.addEventListener('touchend',corta);c.addEventListener('touchmove',corta);
+      }
       lane.appendChild(c);
     }
     row.appendChild(head);row.appendChild(lane);trackRows.appendChild(row);
@@ -1078,7 +1150,7 @@ async function recordSegment(){
   const r=compare(refSeg,takeFeat);
   if(!r){say('El segmento es muy corto para calificar.',true);renderSelInfo();return;}
 
-  S.takes[key(t.id,seg.id)]={raw,sr:ctx.sampleRate,result:r,norm:normGain(raw)};
+  S.takes[key(t.id,seg.id)]={raw,sr:ctx.sampleRate,result:r,norm:normGain(raw),gain:1};
   say(t.name+' · segmento '+(si+1)+': '+r.total+'/100 — '+rankFor(r.total)+
       (cortada?' (toma cortada a mano: la cobertura baja)':''));
 
@@ -1118,7 +1190,71 @@ function normGain(raw){
 }
 function takeGain(t,tk){
   const norm=$('#normOn')&&$('#normOn').checked?(tk.norm||1):1;
-  return norm*(t.gain||1);
+  return norm*vol1(t.gain)*vol1(tk.gain);
+}
+
+/* ===== puerta de ruido =====
+   Devuelve una ENVOLVENTE de ganancia por marco; nunca toca tk.raw. Es la misma
+   separación que ya respeta normGain: el puntaje se calcula sobre la señal cruda,
+   así que ni la puerta ni los volúmenes mueven las notas.
+   Hace falta porque igualar volumen sube el ruido de fondo junto con la voz. */
+const GATE_HOP_S=0.005;                       // marcos de 5 ms
+const GATE_LEVELS={
+  1:{k:2.2,piso:0.50},                        // suave: solo baja 6 dB en los silencios
+  2:{k:3.5,piso:0.22},
+  3:{k:5.0,piso:0.06}
+};
+function gateEnvelope(raw,sr,nivel){
+  const cfg=GATE_LEVELS[nivel];if(!cfg)return null;
+  const hop=Math.max(1,Math.round(sr*GATE_HOP_S));
+  const nf=Math.ceil(raw.length/hop);
+  if(nf<8)return null;
+
+  const rms=new Float32Array(nf);
+  for(let f=0;f<nf;f++){
+    const a=f*hop,b=Math.min(raw.length,a+hop);
+    let s=0;for(let i=a;i<b;i++)s+=raw[i]*raw[i];
+    rms[f]=Math.sqrt(s/Math.max(1,b-a));
+  }
+  const orden=Array.from(rms).sort((x,y)=>x-y);
+  const piso=orden[Math.floor(nf*0.2)];       // percentil 20 = ruido de fondo
+  const pico=orden[nf-1];
+  if(pico<1e-5)return null;
+
+  let abrir=Math.max(piso*cfg.k,pico*0.06);
+  if(abrir>pico*0.6)abrir=pico*0.6;           // grabación sin silencios: no cerrar de más
+  const cerrar=abrir*0.6;                     // histéresis, evita parpadeo
+
+  const viva=new Uint8Array(nf);
+  let abierto=false;
+  for(let f=0;f<nf;f++){
+    if(rms[f]>=abrir)abierto=true;else if(rms[f]<cerrar)abierto=false;
+    if(abierto)viva[f]=1;
+  }
+  // dilatar ±3 marcos para no comerse el ataque de la primera sílaba ni la cola
+  const D=3,dil=new Uint8Array(nf);
+  for(let f=0;f<nf;f++)if(viva[f])
+    for(let k=Math.max(0,f-D);k<Math.min(nf,f+D+1);k++)dil[k]=1;
+
+  // media móvil simétrica: rampas suaves, sin chasquidos al abrir y cerrar
+  const env=new Float32Array(nf),W=4;
+  for(let f=0;f<nf;f++){
+    let s=0,c=0;
+    for(let k=Math.max(0,f-W);k<Math.min(nf,f+W+1);k++){s+=dil[k]?1:cfg.piso;c++;}
+    env[f]=s/c;
+  }
+  return{hop,env};
+}
+const gateLevel=()=>{const el=$('#gateLvl');return el?+el.value||0:0;};
+/* la envolvente se calcula una vez por toma y nivel; es cara y no depende del volumen */
+function gateFor(tk){
+  const nv=gateLevel();
+  if(!nv)return null;
+  if(!tk.gate||tk.gate.nivel!==nv){
+    const g=gateEnvelope(tk.raw,tk.sr,nv);
+    tk.gate=g?{nivel:nv,hop:g.hop,env:g.env}:{nivel:nv,env:null};
+  }
+  return tk.gate.env?tk.gate:null;
 }
 
 function mixdown(sr){
@@ -1128,12 +1264,22 @@ function mixdown(sr){
     for(const s of S.segments){
       const tk=S.takes[key(t.id,s.id)];if(!tk)continue;
       const g=takeGain(t,tk);
+      if(g<=0)continue;
+      const gate=gateFor(tk);
       const off=Math.round(s.t0*sr);
       const ratio=tk.sr/sr,len=Math.floor(tk.raw.length/ratio);
       for(let i=0;i<len;i++){
         const p=i*ratio,i0=Math.floor(p),f=p-i0;
         const a=tk.raw[i0]||0,b=tk.raw[i0+1]!==undefined?tk.raw[i0+1]:a;
-        const idx=off+i;if(idx>=0&&idx<n)out[idx]+=(a+(b-a)*f)*g;
+        const idx=off+i;if(idx<0||idx>=n)continue;
+        let gg=g;
+        if(gate){                               // envolvente interpolada, sin escalones
+          const fp=p/gate.hop,f0=Math.floor(fp),fr=fp-f0;
+          const e0=f0<gate.env.length?gate.env[f0]:1;
+          const e1=f0+1<gate.env.length?gate.env[f0+1]:e0;
+          gg=g*(e0+(e1-e0)*fr);
+        }
+        out[idx]+=(a+(b-a)*f)*gg;
       }
     }
   }
@@ -1177,6 +1323,52 @@ async function playDub(){
   follow();
 }
 
+/* ===== menú de la toma (volumen por segmento) ===== */
+let popCtx=null;
+
+/* una sola toma con su volumen y su puerta ya aplicados, para oír lo que se ajusta */
+function takeBuffer(t,tk){
+  const ctx=ac(),g=takeGain(t,tk),gate=gateFor(tk),n=tk.raw.length;
+  const b=ctx.createBuffer(1,Math.max(1,n),tk.sr);
+  const d=b.getChannelData(0);
+  for(let i=0;i<n;i++){
+    let gg=g;
+    if(gate){
+      const fp=i/gate.hop,f0=Math.floor(fp),fr=fp-f0;
+      const e0=f0<gate.env.length?gate.env[f0]:1;
+      const e1=f0+1<gate.env.length?gate.env[f0+1]:e0;
+      gg=g*(e0+(e1-e0)*fr);
+    }
+    const v=tk.raw[i]*gg;d[i]=v>1?1:v<-1?-1:v;
+  }
+  return b;
+}
+function playTake(t,tk){
+  stopAll();
+  const ctx=ac(),node=ctx.createBufferSource();
+  node.buffer=takeBuffer(t,tk);node.connect(ctx.destination);
+  playing.push(node);node.start();
+}
+function pintaPop(){
+  if(!popCtx)return;
+  const g=vol1(popCtx.tk.gain);
+  $('#popGain').value=g;
+  $('#popVal').textContent=g?g.toFixed(2)+'×':'MUDA';
+}
+function abrirPop(t,s,x,y){
+  const tk=S.takes[key(t.id,s.id)];if(!tk)return;
+  popCtx={t,s,tk};
+  const i=S.segments.findIndex(z=>z.id===s.id)+1;
+  $('#popTitle').textContent=(t.name||'PISTA')+' · SEGMENTO '+i;
+  $('#popNote').textContent=tk.result?tk.result.total+'/100':'';
+  pintaPop();
+  const p=$('#takePop');p.classList.add('show');
+  const r=p.getBoundingClientRect();          // ya visible: se puede medir
+  p.style.left=Math.max(6,Math.min(x,innerWidth-r.width-8))+'px';
+  p.style.top=Math.max(6,Math.min(y,innerHeight-r.height-8))+'px';
+}
+function cerrarPop(){popCtx=null;$('#takePop').classList.remove('show');}
+
 /* ===== intercambio de pistas ===== */
 const EXPORT_SR=16000;
 
@@ -1215,9 +1407,10 @@ function buildExport(tracks){
       const takes={};
       for(const s of S.segments){
         const tk=S.takes[key(t.id,s.id)];if(!tk)continue;
-        takes[s.id]={sr:EXPORT_SR,b64:pcmToB64(resampleTo(tk.raw,tk.sr,EXPORT_SR))};
+        takes[s.id]={sr:EXPORT_SR,gain:vol1(tk.gain),
+          b64:pcmToB64(resampleTo(tk.raw,tk.sr,EXPORT_SR))};
       }
-      return{name:t.name,actor:t.actor,color:t.color,gain:t.gain||1,takes};
+      return{name:t.name,actor:t.actor,color:t.color,gain:vol1(t.gain),takes};
     })
   };
 }
@@ -1293,7 +1486,7 @@ function ingestTrack(it,map,reuseLocalId){
     if(it.actor)t.actor=it.actor;
   }
   if(it.color)t.color=it.color;
-  if(it.gain)t.gain=it.gain;
+  if(typeof it.gain==='number')t.gain=vol1(it.gain);   // un 0 es válido: pista muda
   let added=0,skipped=0;
   for(const[segId,tk]of Object.entries(it.takes||{})){
     const target=map[segId];if(!target){skipped++;continue;}
@@ -1304,7 +1497,8 @@ function ingestTrack(it,map,reuseLocalId){
     const refSeg=sliceFeat(S.current.feat,Math.round(seg.t0/HOPS),Math.round(seg.t1/HOPS));
     const r=compare(refSeg,feat);
     if(!r){skipped++;continue;}
-    S.takes[key(t.id,seg.id)]={raw,sr:tk.sr||EXPORT_SR,result:r,norm:normGain(raw)};
+    S.takes[key(t.id,seg.id)]={raw,sr:tk.sr||EXPORT_SR,result:r,norm:normGain(raw),
+      gain:typeof tk.gain==='number'?tk.gain:1};
     added++;
   }
   return{track:t,added,skipped};
@@ -1319,8 +1513,18 @@ const CLIP_CHUNK=2.5*1024*1024, MAX_CLIP=25*1024*1024;
 S.party={code:null,mine:null,map:{},seen:{},segs:[],timer:null,busy:false};
 S.pending=null;   // sala a la que nos invitaron pero a la que todavía no entramos
 
+/* la app se abre directo desde el disco a propósito, pero /api/room solo existe
+   servido: sin eso fetch lanza un TypeError seco que no le dice nada a nadie */
+const sinServidor=()=>location.protocol==='file:';
+function porQueFalla(){
+  return sinServidor()
+    ? 'las salas necesitan un servidor. Abriste el archivo directo desde el disco, y ahí «/api/room» no existe. Usa el sitio publicado (o «vercel dev» en tu equipo). Todo lo demás sí funciona así: grabar, calificar, exportar e importar pistas.'
+    : 'no hubo respuesta de «/api/room». Revisa tu conexión y que el despliegue incluya la carpeta api/.';
+}
 async function api(path,opts){
-  const r=await fetch(API+path,opts||{});
+  let r;
+  try{r=await fetch(API+path,opts||{});}
+  catch(e){throw new Error(porQueFalla());}
   let j={};try{j=await r.json();}catch(e){}
   if(!r.ok)throw new Error(j.error||('error '+r.status));
   return j;
@@ -1347,6 +1551,15 @@ function renderParty(){
   $('#partyOn').style.display=on?'':'none';
   $('#partyState').textContent=on?('SALA '+S.party.code):'SIN SALA';
   $('#createRoom').disabled=!(S.current&&S.segments.length)||on;
+
+  // abierto desde el disco: decirlo aquí en vez de dejar que el clic falle
+  if(sinServidor()){
+    $('#partyState').textContent='SIN SERVIDOR';
+    for(const id of ['createRoom','joinRoom','joinCode','shareClip'])$('#'+id).disabled=true;
+    $('#partyHint').textContent='Este archivo está abierto desde el disco y las salas necesitan un servidor. '+
+      'Grabar, calificar y exportar o importar pistas sí funcionan así; para jugar en sala usa el sitio publicado.';
+    return;
+  }
 
   const sc=$('#shareClip'),tam=S.current?S.current.blob.size:0;
   const grande=tam>MAX_CLIP;
@@ -1539,14 +1752,15 @@ async function partyPush(){
   const takes={};
   for(const s of S.segments){
     const tk=S.takes[key(t.id,s.id)];if(!tk)continue;
-    takes[aSala[s.id]||s.id]={sr:EXPORT_SR,b64:pcmToB64(resampleTo(tk.raw,tk.sr,EXPORT_SR))};
+    takes[aSala[s.id]||s.id]={sr:EXPORT_SR,gain:vol1(tk.gain),
+      b64:pcmToB64(resampleTo(tk.raw,tk.sr,EXPORT_SR))};
   }
   if(!Object.keys(takes).length){say('Esa pista todavía no tiene tomas.',true);return;}
   try{
     const j=await api('?action=track&code='+S.party.code,{method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({track:{id:t.id,name:t.name,actor:t.actor,
-        color:t.color,gain:t.gain||1,takes}})});
+        color:t.color,gain:vol1(t.gain),takes}})});
     S.party.seen[t.id]=j.ts;S.party.map[t.id]=t.id;
     say('Pista subida: '+j.takes+' tomas.');
     partySync();
@@ -1746,6 +1960,32 @@ async function renderVideo(){
 }
 
 /* ===== eventos ===== */
+/* menú de la toma: en 'input' no se re-renderiza para no romper el arrastre */
+$('#popGain').addEventListener('input',e=>{
+  if(!popCtx)return;
+  const g=+e.target.value;
+  popCtx.tk.gain=g;
+  $('#popVal').textContent=g?g.toFixed(2)+'×':'MUDA';
+});
+$('#popGain').addEventListener('change',renderAll);
+$('#popReset').addEventListener('click',()=>{
+  if(!popCtx)return;popCtx.tk.gain=1;pintaPop();renderAll();});
+$('#popPlay').addEventListener('click',()=>{if(popCtx)playTake(popCtx.t,popCtx.tk);});
+$('#popDel').addEventListener('click',()=>{
+  if(!popCtx)return;
+  if(!confirm('¿Borrar la toma de «'+popCtx.t.name+'» en ese segmento?'))return;
+  delete S.takes[key(popCtx.t.id,popCtx.s.id)];
+  cerrarPop();renderAll();say('Toma borrada.');});
+document.addEventListener('click',e=>{
+  const p=$('#takePop');
+  if(p.classList.contains('show')&&!p.contains(e.target))cerrarPop();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')cerrarPop();});
+/* al cambiar la supresión hay que rehacer la mezcla; las envolventes se recalculan solas */
+$('#gateLvl').addEventListener('change',()=>{
+  say($('#gateLvl').selectedIndex?'Supresión de ruido: '+
+      $('#gateLvl').options[$('#gateLvl').selectedIndex].textContent.replace(/^Ruido: supresión /,'')+
+      '. No cambia las notas.':'Supresión de ruido apagada.');});
+
 recBtn.addEventListener('click',recordSegment);
 $('#stopBtn').addEventListener('click',()=>{stopReq=true;say('Deteniendo…');});
 $('#listenBtn').addEventListener('click',listenSegment);
