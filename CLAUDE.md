@@ -51,7 +51,8 @@ Preset de framework: *Other*.
 ## Reglas que no se rompen
 
 **Sin build step, sin framework, sin bundler.** `index.html` se abre directo en un
-navegador y funciona — con una sola excepción: **las salas no**, porque en `file://`
+navegador y funciona — salvo lo que necesita red: RNNoise y el QR se bajan por CDN y
+degradan solos si no hay, y **las salas no funcionan**, porque en `file://`
 no existe `/api/room` y `fetch` falla con un `TypeError` seco. El panel PARTY lo
 detecta (`sinServidor()`), se marca SIN SERVIDOR y explica que el resto sí sirve.
 Al probar salas hay que usar el sitio publicado o `vercel dev`. No introducir React, Vite, npm scripts de compilación ni
@@ -80,9 +81,14 @@ el margen de 4.5 MB.**
 
 **El puntaje no debe cambiar por el volumen.** `compare()` normaliza por pico, así que
 es inmune al nivel de grabación. La igualación de volumen (`normGain`), los volúmenes
-manuales y la puerta de ruido se aplican **solo en la mezcla**, nunca destructivamente
-sobre `tk.raw`. Mantener esa separación: es lo que permite subirle el volumen a una
-toma o limpiarle el ruido sin que a nadie le cambie la nota.
+manuales y la puerta de la mezcla se aplican **solo en la mezcla**, nunca
+destructivamente sobre `tk.raw`. Mantener esa separación: es lo que permite subirle el
+volumen a una toma sin que a nadie le cambie la nota.
+
+La **única** excepción deliberada es RNNoise al grabar, que sí escribe sobre `tk.raw`
+antes de calificar. Se admite porque no es una decisión de mezcla sino de captura —
+equivale a usar otro micrófono— y porque así todos los que recalifiquen esa toma
+obtienen el mismo número. No añadir más excepciones sin esa segunda garantía.
 
 **Nunca escribir `gain||1`.** Un volumen de 0 es legítimo — significa mudo — y `||1`
 lo convierte en 1, dejando sonando a todo volumen justo lo que se mandó callar. Para
@@ -143,6 +149,45 @@ Dos salvaguardas que importan: si el umbral quedara por encima del 60 % del pico
 recorta, para que **hablar sin parar no se recorte**; y con silencio absoluto o tomas
 de menos de 8 marcos devuelve `null` (no hay nada que separar). La envolvente se
 **cachea por toma y nivel**, porque es cara y no depende del volumen.
+
+### RNNoise al grabar
+
+La puerta anterior solo baja los silencios, así que oyendo **un segmento suelto** casi
+no se notaba. Para eso está `denoise()`: RNNoise, una red neuronal que quita el ruido
+*también mientras hablas*. Se aplica en `recordSegment()` sobre `raw` **antes** de
+`extractFeatures`, así que a diferencia del volumen y de la puerta **sí entra en el
+puntaje** — a propósito: la nota sale de la señal limpia y cualquiera que recalifique
+esa toma obtiene el mismo número. Es la única transformación que se guarda de forma
+permanente en `tk.raw`.
+
+Detalles que hay que respetar si se toca:
+
+- **`rnnoise-sync.js` es un módulo ES** (`export default`, `import.meta.url`). Un
+  `<script>` normal no lo carga: hay que usar `import()` dinámico. Se eligió la
+  variante *sync* porque trae el WASM incrustado en base64 y evita el problema de
+  rutas cruzadas que ya costó caro con ffmpeg.
+- **RNNoise trabaja en escala de int16, no en −1..1.** Hay que multiplicar por 32768
+  al entrar y dividir al salir. Con la escala equivocada no falla ni avisa: cree que
+  todo es silencio y **no suprime nada** (medido: −32 dB con la escala correcta contra
+  −0.0 dB con la equivocada).
+- Solo acepta **48 kHz en marcos de 480 muestras**. Se remuestrea a la ida y a la
+  vuelta; ese viaje se queda a una muestra por el truncado de `resampleTo`, así que
+  `denoise()` rellena para devolver **exactamente** el largo que entró.
+- Son ~1.9 MB que se bajan una sola vez. Si falla, `rnnRoto` lo recuerda y la
+  grabación sigue como siempre.
+
+Verificado contra el WASM real: ruido blanco −32 dB, voz −0.5 dB, sin fugas de memoria
+tras 25 tomas, y 4 s de audio procesados en 0.16 s.
+
+### Reproducir un tramo
+
+`playDubRange(t0,t1)` corta la mezcla y la reproduce con el video sincronizado, para
+revisar un segmento sin oír la escena entera. `playDub()` sigue siendo el completo.
+
+**Trampa:** el bucle que vigila el final usa `requestAnimationFrame`, que **se congela
+cuando la pestaña no está visible** — el video seguía de largo y el estado nunca volvía
+a «espera». Por eso hay un `setTimeout` de respaldo. El resto del archivo tiene el
+mismo patrón sin red: si aparece un cuelgue parecido en otra reproducción, es esto.
 
 ---
 

@@ -261,9 +261,14 @@ input[type=text]::placeholder{color:#4d707a}
     <button class="btn" id="listenBtn" disabled>OÍR EL SEGMENTO</button>
     <button class="btn primary" id="recBtn" disabled>GRABAR SEGMENTO</button>
     <button class="btn stop" id="stopBtn" disabled>DETENER</button>
+    <button class="btn" id="playSegDub" disabled>OÍR ESTE SEGMENTO DOBLADO</button>
     <button class="btn" id="playAllBtn" disabled>REPRODUCIR DOBLAJE</button>
+    <button class="btn ghost sm" id="playFromSeg" disabled>DOBLAJE DESDE AQUÍ</button>
     <button class="btn ghost sm" id="playOrigBtn" disabled>OÍR TODO EL CLIP</button>
     <button class="btn ghost sm" id="delTake" disabled>BORRAR TOMA</button>
+    <label class="toggle" title="Limpia el ruido de fondo de tu grabación con RNNoise. Se aplica al grabar, así que también lo oyen tus amigos.">
+      <input type="checkbox" id="denoiseOn"> QUITAR RUIDO AL GRABAR
+    </label>
     <label class="toggle" title="Antes de grabar reproduce el original del segmento para que lo escuches.">
       <input type="checkbox" id="rehearse" checked> ENSAYO PREVIO
     </label>
@@ -919,6 +924,10 @@ function renderSelInfo(){
   $('#splitSeg').disabled=!s;$('#mergeSeg').disabled=!s;
   const any=Object.keys(S.takes).length>0;
   $('#playAllBtn').disabled=!any;$('#exportBtn').disabled=!any;
+  // el doblaje de un segmento solo tiene sentido si ALGUIEN lo grabó
+  const dobladoAqui=!!s&&S.tracks.some(x=>S.takes[key(x.id,s.id)]);
+  $('#playSegDub').disabled=!dobladoAqui||S.recording;
+  $('#playFromSeg').disabled=!s||!any||S.recording;
   $('#videoBtn').disabled=!any||!S.current||!S.current.type.startsWith('video')||S.recording;
   $('#expAll').disabled=!any;
   $('#expTrack').disabled=!(t&&S.segments.some(sg=>S.takes[key(t.id,sg.id)]));
@@ -1024,6 +1033,60 @@ async function listenSegment(){
   $('#listenlamp').classList.remove('show');
   setAir('espera');
   S.listening=false;stopReq=false;renderSelInfo();
+}
+
+/* ===== supresión de ruido al grabar (RNNoise) =====
+   Distinto de la puerta de la mezcla: aquella solo baja los silencios, RNNoise es una
+   red neuronal que quita el ruido TAMBIÉN mientras hablas. Por eso se nota al oír un
+   segmento suelto, que es donde la puerta casi no hacía nada.
+   Se aplica sobre la grabación ANTES de calificar, así que la nota sale de la señal ya
+   limpia y cualquiera que recalifique esa toma obtiene el mismo número.
+   Son ~1.9 MB que se bajan una sola vez; si no se pueden bajar, se graba como siempre. */
+const RNN_URL='https://cdn.jsdelivr.net/npm/@jitsi/rnnoise-wasm@0.2.1/dist/rnnoise-sync.js';
+const RNN_SR=48000, RNN_FRAME=480;      // rnnoise solo trabaja a 48 kHz, en marcos de 10 ms
+let rnnMod=null,rnnRoto=false;
+
+async function rnnCargar(){
+  if(rnnMod)return rnnMod;
+  if(rnnRoto)return null;
+  try{
+    // es un módulo ES con «export default»: un <script> normal no lo carga
+    const m=await import(RNN_URL);
+    const crear=m.default||m.createRNNWasmModuleSync;
+    if(typeof crear!=='function')throw new Error('sin fábrica');
+    const M=await crear();
+    if(!M||!M._rnnoise_create||!M.HEAPF32)throw new Error('sin API');
+    rnnMod=M;return M;
+  }catch(e){rnnRoto=true;return null;}
+}
+
+/* copia limpia de raw, devuelta a su misma frecuencia; null si no se pudo */
+async function denoise(raw,sr){
+  const M=await rnnCargar();
+  if(!M)return null;
+  const ent=resampleTo(raw,sr,RNN_SR);
+  const n=Math.ceil(ent.length/RNN_FRAME)*RNN_FRAME;   // el último marco va con ceros
+  const buf=new Float32Array(n);buf.set(ent);
+  const out=new Float32Array(n);
+  const st=M._rnnoise_create(0);                        // 0 = modelo por defecto
+  const p=M._malloc(RNN_FRAME*4);
+  try{
+    const base=p>>2;
+    for(let o=0;o<n;o+=RNN_FRAME){
+      // ojo: rnnoise trabaja en escala de int16, no en -1..1
+      for(let i=0;i<RNN_FRAME;i++)M.HEAPF32[base+i]=buf[o+i]*32768;
+      M._rnnoise_process_frame(st,p,p);                 // in-place
+      for(let i=0;i<RNN_FRAME;i++)out[o+i]=M.HEAPF32[base+i]/32768;
+    }
+  }finally{M._free(p);M._rnnoise_destroy(st);}
+
+  const vuelta=resampleTo(out.subarray(0,ent.length),RNN_SR,sr);
+  if(vuelta.length===raw.length)return vuelta;
+  // ida y vuelta de 44.1k a 48k y de regreso se queda a una muestra por el truncado
+  // de resampleTo; la toma tiene que conservar su largo exacto
+  const fin=new Float32Array(raw.length);
+  fin.set(vuelta.subarray(0,Math.min(vuelta.length,raw.length)));
+  return fin;
 }
 
 async function recordSegment(){
@@ -1137,7 +1200,15 @@ async function recordSegment(){
   const flat=new Float32Array(total);let o=0;
   for(const c of chunks){flat.set(c,o);o+=c.length;}
   const want=Math.ceil((seg.t1-seg.t0)*ctx.sampleRate);
-  const raw=flat.slice(startIdx,Math.min(flat.length,startIdx+want));
+  let raw=flat.slice(startIdx,Math.min(flat.length,startIdx+want));
+
+  if($('#denoiseOn').checked){
+    say('Quitando el ruido…');
+    const limpio=await denoise(raw,ctx.sampleRate);
+    if(limpio)raw=limpio;
+    else say('No se pudo cargar el supresor de ruido (¿sin internet?). La toma queda tal cual.',true);
+  }
+
   const sig=toAnalysisRate([raw],ctx.sampleRate);
   const takeFeat=extractFeatures(sig);
 
@@ -1298,6 +1369,47 @@ function encodeWav(s,sr){
     v.setInt16(o,x<0?x*0x8000:x*0x7FFF,true);o+=2;}
   return new Blob([buf],{type:'audio/wav'});
 }
+/* doblaje de un tramo cualquiera, con el video sincronizado: evita tener que
+   oír la escena entera desde el principio para revisar un solo segmento */
+async function playDubRange(t0,t1){
+  if(!S.current)return;
+  stopAll();stopReq=false;
+  const ctx=ac(),sr=ctx.sampleRate;
+  const mix=mixdown(sr);
+  const a=Math.max(0,Math.round(t0*sr)),b=Math.min(mix.length,Math.round(t1*sr));
+  if(b<=a){say('Ese tramo no tiene nada que reproducir.',true);return;}
+  const buf=ctx.createBuffer(1,b-a,sr);
+  buf.getChannelData(0).set(mix.subarray(a,b));
+  const node=ctx.createBufferSource();node.buffer=buf;node.connect(ctx.destination);
+
+  await seekTo(t0);
+  if(stopReq){stopReq=false;return;}
+  playing.push(node);
+  vid.muted=true;setAir('doblaje');ph.classList.add('show');
+  S.listening=true;renderSelInfo();
+  try{await vid.play();}catch(e){}
+  node.start();
+  await new Promise(res=>{
+    const laneLeft=132;
+    const tick=()=>{
+      if(stopReq||vid.currentTime>=t1||vid.ended||vid.paused){res();return;}
+      const w=$('#tl').querySelector('.lane').clientWidth;
+      ph.style.left=(laneLeft+(vid.currentTime/dur())*w)+'px';
+      requestAnimationFrame(tick);
+    };
+    tick();
+    // red de seguridad: si la pestaña se va al fondo, requestAnimationFrame se
+    // congela y el tramo nunca terminaría de cerrarse
+    setTimeout(res,(t1-t0)*1000+900);
+  });
+  stopAll();ph.classList.remove('show');setAir('espera');
+  S.listening=false;stopReq=false;renderSelInfo();
+}
+function segSel(){
+  const i=S.segments.findIndex(x=>x.id===S.sel.seg);
+  return i<0?null:S.segments[i];
+}
+
 async function playDub(){
   if(!S.current)return;
   stopAll();
@@ -1990,6 +2102,14 @@ recBtn.addEventListener('click',recordSegment);
 $('#stopBtn').addEventListener('click',()=>{stopReq=true;say('Deteniendo…');});
 $('#listenBtn').addEventListener('click',listenSegment);
 $('#playAllBtn').addEventListener('click',playDub);
+$('#playSegDub').addEventListener('click',()=>{
+  const s=segSel();if(s)playDubRange(s.t0,s.t1);});
+$('#playFromSeg').addEventListener('click',()=>{
+  const s=segSel();if(s)playDubRange(s.t0,dur());});
+$('#denoiseOn').addEventListener('change',e=>{
+  say(e.target.checked
+    ?'Se quitará el ruido de cada toma nueva. Las ya grabadas no cambian; regrábalas si quieres limpiarlas.'
+    :'Las tomas nuevas se guardarán sin limpiar.');});
 $('#playOrigBtn').addEventListener('click',async()=>{
   if(!S.current)return;stopAll();
   vid.muted=false;vid.currentTime=0;setAir('original');
